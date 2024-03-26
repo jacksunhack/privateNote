@@ -1,27 +1,40 @@
 <?php
 
-function saveMessage($connection, $id, $message, $password){ // OK
-    $iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length('aes-256-cbc'));
-    $encrypted = openssl_encrypt($message, 'aes-256-cbc', $password, 0, $iv);
-    $message = base64_encode($encrypted . '::' . $iv);
-    $sql = "INSERT INTO `note` (`id`, `message`)
-    VALUES (:id, :message);";
-    $sth = $connection->prepare($sql);
-    $sth->execute(array(':id' => $id, ':message' => $message));
+function generateRSAKeys(){
+    $config = array(
+        "digest_alg" => "sha512",
+        "private_key_bits" => 4096,
+        "private_key_type" => OPENSSL_KEYTYPE_RSA,
+    );
+    $res = openssl_pkey_new($config);
+    openssl_pkey_export($res, $privKey);
+    $pubKey = openssl_pkey_get_details($res);
+    $pubKey = $pubKey["key"];
+    return array('privateKey' => $privKey, 'publicKey' => $pubKey);
 }
 
-function getMessage($connection, $id, $password){ // OK
-    $sql = "SELECT `message` FROM `note`
-    WHERE `id` = :id";
+function saveMessage($connection, $id, $message, $publicKey, $privateKey){
+    openssl_public_encrypt($message, $encrypted, $publicKey);
+    $message = base64_encode($encrypted);
+    $sql = "INSERT INTO `note` (`id`, `message`, `public_key`, `private_key`)
+            VALUES (:id, :message, :public_key, :private_key);";
+    $sth = $connection->prepare($sql);
+    $sth->execute(array(':id' => $id, ':message' => $message, ':public_key' => $publicKey, ':private_key' => $privateKey));
+}
+
+function getMessage($connection, $id){
+    $sql = "SELECT `message`, `public_key`, `private_key` FROM `note`
+            WHERE `id` = :id";
     $sth = $connection->prepare($sql);
     $sth->execute(array(':id' => $id));
     $enregistrements = $sth->fetchObject();
     if(!$enregistrements) return 'This note was read and destroyed';
-    list($encrypted_data, $iv) = explode('::', base64_decode($enregistrements->message), 2);
-    $message = openssl_decrypt($encrypted_data, 'aes-256-cbc', $password, 0, $iv);
-    if (!$message) return 'Password incorrect.';
+    $encrypted = base64_decode($enregistrements->message);
+    $privateKey = $enregistrements->private_key;
+    $privateKeyResource = openssl_pkey_get_private($privateKey);
+    openssl_private_decrypt($encrypted, $decrypted, $privateKeyResource);
     deleteMessage($connection, $id);
-    return openssl_decrypt($encrypted_data, 'aes-256-cbc', $password, 0, $iv);
+    return $decrypted;
 }
 
 function deleteMessage($connection, $id){
